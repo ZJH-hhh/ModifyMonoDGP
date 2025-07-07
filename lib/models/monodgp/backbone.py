@@ -15,8 +15,10 @@ from collections import OrderedDict
 import torch
 import torch.nn.functional as F
 import torchvision
+import timm
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
+from torchvision.models.feature_extraction import create_feature_extractor
 from typing import Dict, List
 
 from utils.misc import NestedTensor, is_main_process
@@ -62,6 +64,75 @@ class FrozenBatchNorm2d(torch.nn.Module):
         scale = w * (rv + eps).rsqrt()
         bias = b - rm * scale
         return x * scale + bias
+    
+
+class BackboneConvNeXt(nn.Module):
+    """
+    ConvNeXt-Small（ImageNet-1K 预训练）导出 stride 8/16/32 三层特征
+    """
+    def __init__(self,
+                 name: str = "convnext_small",
+                 train_backbone: bool = True,
+                 return_interm_layers: bool = True,
+                 convnext_pretrained_path: str = "/home/zjhzjh/workdir/Modify_MonoDGP/convnext_small_22k_1k_224.pth"):
+        super().__init__()
+
+        # 22k权重
+        # ckpt = torch.load(convnext_pretrained_path, map_location='cpu', weights_only=False)
+        # backbone = timm.create_model('convnext_small', pretrained=False)
+        # state = {k.replace('model.', ''): v for k, v in ckpt['model'].items() if not k.startswith('head.')}        # 去掉分类头
+        # backbone.load_state_dict(state, strict=False)
+
+        # for n, p in backbone.named_parameters():
+        #     if not train_backbone or n.startswith(('features.0', 'features.1')):
+        #         p.requires_grad_(False)
+
+        # if return_interm_layers:
+        #     return_layers = {"stages.1":"0", "stages.2":"1", "stages.3":"2"}
+        #     self.strides = [8, 16, 32]
+        #     self.num_channels = [192, 384, 768]
+        # else:
+        #     return_layers = {"stages.3":"0"}
+        #     self.strides = [32]
+        #     self.num_channels = [768]
+
+        # ------- ① 直接用 torchvision 自带的 1K 权重 ----------
+        weights = (
+            torchvision.models.ConvNeXt_Small_Weights.IMAGENET1K_V1
+            if is_main_process() else None          # 多卡只让 rank-0 下载
+        )
+        backbone = getattr(torchvision.models, name)(weights=weights)
+
+        # ------- ② 冻结早期层 ----------
+        for name, parameter in backbone.named_parameters():
+            if not train_backbone or 'features.3' not in name and 'features.5' not in name and 'features.7' not in name:
+                parameter.requires_grad_(False)
+
+        # ------- ③ 选出要返回的节点 ----------
+        if return_interm_layers:
+            return_layers = {
+                "features.3": "0",   # stride 8   192C
+                "features.5": "1",   # stride 16  384C
+                "features.7": "2",   # stride 32  768C
+            }
+            self.strides      = [8, 16, 32]
+            self.num_channels = [192, 384, 768]
+            # self.num_channels = [256, 512, 1024]
+        else:
+            return_layers     = {"features.7": "0"}
+            self.strides      = [32]
+            self.num_channels = [768]
+
+        # ------- ④ 构建特征提取器 ----------
+        self.body = create_feature_extractor(backbone, return_nodes=return_layers)
+
+    def forward(self, images):
+        xs = self.body(images)
+        out = {}
+        for name, x in xs.items():
+            m = torch.zeros(x.shape[0], x.shape[2], x.shape[3]).to(torch.bool).to(x.device)
+            out[name] = NestedTensor(x, m)
+        return out
 
 
 class BackboneBase(nn.Module):
@@ -130,6 +201,7 @@ def build_backbone(cfg):
     
     position_embedding = build_position_encoding(cfg)
     return_interm_layers = cfg['masks'] or cfg['num_feature_levels'] > 1
-    backbone = Backbone(cfg['backbone'], cfg['train_backbone'], return_interm_layers, cfg['dilation'])
+    # backbone = Backbone(cfg['backbone'], cfg['train_backbone'], return_interm_layers, cfg['dilation'])
+    backbone = BackboneConvNeXt(cfg['backbone'], cfg['train_backbone'], return_interm_layers)
     model = Joiner(backbone, position_embedding)
     return model

@@ -118,6 +118,9 @@ class Object3d(object):
 def get_calib_from_file(calib_file):
     with open(calib_file) as f:
         lines = f.readlines()
+    
+    # if len(lines) < 3:
+    #     print(f"[DEBUG] 读取标定文件出错：{calib_file} 仅有 {len(lines)} 行", flush=True)
 
     obj = lines[2].strip().split(' ')[1:]
     P2 = np.array(obj, dtype=np.float32)

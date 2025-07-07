@@ -1,4 +1,5 @@
 import os
+import sys
 import tqdm
 
 import torch
@@ -65,7 +66,14 @@ class Trainer(object):
     def train(self):
         start_epoch = self.epoch
 
-        progress_bar = tqdm.tqdm(range(start_epoch, self.cfg['max_epoch']), dynamic_ncols=True, leave=True, desc='epochs')
+        progress_bar = tqdm.tqdm(
+            range(start_epoch, self.cfg['max_epoch']), 
+            dynamic_ncols=True, 
+            leave=True, 
+            desc='epochs',
+            disable=not sys.stderr.isatty(),
+            file=sys.stderr
+        )
         best_result = self.best_result
         best_epoch = self.best_epoch
         for epoch in range(start_epoch, self.cfg['max_epoch']):
@@ -118,7 +126,13 @@ class Trainer(object):
         self.model.train()
         print(">>>>>>> Epoch:", str(epoch) + ":")
 
-        progress_bar = tqdm.tqdm(total=len(self.train_loader), leave=(self.epoch+1 == self.cfg['max_epoch']), desc='iters')
+        progress_bar = tqdm.tqdm(
+            total=len(self.train_loader), 
+            leave=(self.epoch+1 == self.cfg['max_epoch']), 
+            desc='iters',
+            disable=not sys.stderr.isatty(),
+            file=sys.stderr
+        )
         for batch_idx, (inputs, calibs, targets, info) in enumerate(self.train_loader):
             inputs = inputs.to(self.device)
             calibs = calibs.to(self.device)

@@ -1,4 +1,5 @@
 import os
+import sys
 import tqdm
 import shutil
 
@@ -67,7 +68,13 @@ class Tester(object):
         self.model.eval()
 
         results = {}
-        progress_bar = tqdm.tqdm(total=len(self.dataloader), leave=True, desc='Evaluation Progress')
+        progress_bar = tqdm.tqdm(
+            total=len(self.dataloader), 
+            leave=True, 
+            desc='Evaluation Progress',
+            disable=not sys.stderr.isatty(),
+            file=sys.stderr
+        )
         model_infer_time = 0
         for batch_idx, (inputs, calibs, targets, info) in enumerate(self.dataloader):
             # load evaluation data and move data to GPU.
