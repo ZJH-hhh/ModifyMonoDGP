@@ -19,6 +19,7 @@ from .depth_predictor import DepthPredictor
 from .depth_predictor.ddn_loss import DDNLoss
 from lib.losses.focal_loss import sigmoid_focal_loss
 from .position_encoding import PositionEmbeddingCamRay
+from .attention_modules import SpatialChannelAttention
 
 
 def _get_clones(module, N):
@@ -29,7 +30,8 @@ class MonoDGP(nn.Module):
     """ This is the MonoDGP module that performs monocualr 3D object detection """
     def __init__(self, backbone, depth_predictor, det2d_transformer, det3d_transformer,
                   num_classes, num_queries, num_feature_levels, 
-                  aux_loss=True, with_box_refine=False, init_box=False, group_num=11):
+                  aux_loss=True, with_box_refine=False, init_box=False, group_num=11,
+                  use_scab=True, scab_reduction=16):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -53,6 +55,16 @@ class MonoDGP(nn.Module):
         self.region_head = RegionSegHead(d_model=hidden_dim)
 
         self.num_feature_levels = num_feature_levels
+        self.use_scab = use_scab
+        
+        # Add SCAB modules for feature enhancement (optional)
+        if self.use_scab:
+            self.scab_modules = nn.ModuleList([
+                SpatialChannelAttention(hidden_dim, reduction=scab_reduction, init_weight=0.05) 
+                for _ in range(num_feature_levels)
+            ])
+        else:
+            self.scab_modules = None
         
         # prediction heads
         self.class_embed = nn.Linear(hidden_dim, num_classes)
@@ -135,7 +147,14 @@ class MonoDGP(nn.Module):
         masks = []
         for l, feat in enumerate(features):
             src, mask = feat.decompose()
-            srcs.append(self.input_proj[l](src))
+            # Apply input projection
+            projected_src = self.input_proj[l](src)
+            # Apply SCAB for feature enhancement (if enabled)
+            if self.use_scab:
+                enhanced_src = self.scab_modules[l](projected_src)
+            else:
+                enhanced_src = projected_src
+            srcs.append(enhanced_src)
             masks.append(mask)
             assert mask is not None
 
@@ -143,9 +162,14 @@ class MonoDGP(nn.Module):
             _len_srcs = len(srcs)
             for l in range(_len_srcs, self.num_feature_levels):
                 if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
+                    projected_src = self.input_proj[l](features[-1].tensors)
                 else:
-                    src = self.input_proj[l](srcs[-1])
+                    projected_src = self.input_proj[l](srcs[-1])
+                # Apply SCAB for additional feature levels (if enabled)
+                if self.use_scab:
+                    src = self.scab_modules[l](projected_src)
+                else:
+                    src = projected_src
                 m = torch.zeros(src.shape[0], src.shape[2], src.shape[3]).to(torch.bool).to(src.device)
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
                 pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
@@ -612,7 +636,9 @@ def build(cfg):
         num_feature_levels=cfg['num_feature_levels'],
         with_box_refine=cfg['with_box_refine'],
         init_box=cfg['init_box'],
-        group_num=cfg['group_num'])
+        group_num=cfg['group_num'],
+        use_scab=cfg.get('use_scab', True),
+        scab_reduction=cfg.get('scab_reduction', 16))
 
     # matcher
     matcher = build_matcher(cfg)

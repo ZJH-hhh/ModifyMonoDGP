@@ -29,6 +29,119 @@ parser.add_argument('-e', '--evaluate_only', action='store_true', default=False,
 args = parser.parse_args()
 
 
+def adjust_scab_influence(model, epoch, total_epochs, warmup_epochs=20):
+    """
+    Gradually increase SCAB influence during training
+    """
+    if not hasattr(model, 'scab_modules') or model.scab_modules is None:
+        return
+    
+    if epoch <= warmup_epochs:
+        # Gradual warmup: 0.01 -> 0.5
+        target_weight = 0.01 + (0.5 - 0.01) * (epoch / warmup_epochs)
+    else:
+        # After warmup: 0.5 -> 1.0
+        remaining_epochs = total_epochs - warmup_epochs
+        progress = min(1.0, (epoch - warmup_epochs) / remaining_epochs)
+        target_weight = 0.5 + 0.5 * progress
+    
+    # Update all SCAB modules
+    for scab_module in model.scab_modules:
+        if hasattr(scab_module, 'attention_weight'):
+            with torch.no_grad():
+                scab_module.attention_weight.data.fill_(target_weight)
+    
+    return target_weight
+
+
+def load_pretrained_weights_selective(model, pretrained_path, ignore_scab=True, logger=None):
+    """
+    Load pretrained weights while ignoring SCAB-related parameters
+    """
+    if not os.path.exists(pretrained_path):
+        if logger:
+            logger.warning(f"Pretrained weights not found at {pretrained_path}")
+        return model
+    
+    if logger:
+        logger.info(f"Loading pretrained weights from {pretrained_path}")
+    
+    checkpoint = torch.load(pretrained_path, map_location='cpu')
+    
+    if 'model' in checkpoint:
+        pretrained_dict = checkpoint['model']
+    else:
+        pretrained_dict = checkpoint
+    
+    model_dict = model.state_dict()
+    
+    # Filter out SCAB-related parameters if requested
+    if ignore_scab:
+        filtered_dict = {k: v for k, v in pretrained_dict.items() 
+                        if 'scab_modules' not in k}
+        if logger:
+            logger.info(f"Filtered out {len(pretrained_dict) - len(filtered_dict)} SCAB-related parameters")
+    else:
+        filtered_dict = pretrained_dict
+    
+    # Update only existing parameters
+    matched_dict = {k: v for k, v in filtered_dict.items() if k in model_dict}
+    missing_keys = set(model_dict.keys()) - set(matched_dict.keys())
+    unexpected_keys = set(filtered_dict.keys()) - set(model_dict.keys())
+    
+    if logger:
+        logger.info(f"Matched parameters: {len(matched_dict)}")
+        logger.info(f"Missing parameters: {len(missing_keys)}")
+        logger.info(f"Unexpected parameters: {len(unexpected_keys)}")
+    
+    model_dict.update(matched_dict)
+    model.load_state_dict(model_dict)
+    
+    return model
+
+
+class ProgressiveSCABTrainer(Trainer):
+    """
+    Extended trainer with SCAB progressive training
+    """
+    def __init__(self, cfg, model, optimizer, train_loader, test_loader, lr_scheduler, warmup_lr_scheduler, logger, loss, model_name):
+        # Initialize parent class normally (handles pretrained weight loading with flexible logic)
+        super().__init__(cfg, model, optimizer, train_loader, test_loader, lr_scheduler, warmup_lr_scheduler, logger, loss, model_name)
+        self.scab_warmup_epochs = cfg.get('scab_warmup_epochs', 20)
+        
+        # Log SCAB status
+        if hasattr(model, 'scab_modules') and model.scab_modules is not None:
+            self.logger.info(f"SCAB modules initialized: {len(model.scab_modules)} modules")
+        else:
+            self.logger.info("No SCAB modules found")
+        
+    def train(self):
+        """Override train method to add SCAB progress tracking"""
+        start_epoch = self.epoch
+        
+        # Log SCAB configuration
+        if hasattr(self.model, 'scab_modules') and self.model.scab_modules is not None:
+            self.logger.info(f"SCAB Progressive Training Configuration:")
+            self.logger.info(f"  - SCAB modules: {len(self.model.scab_modules)}")
+            self.logger.info(f"  - Warmup epochs: {self.scab_warmup_epochs}")
+            self.logger.info(f"  - Total epochs: {self.cfg['max_epoch']}")
+        
+        # Call parent train method
+        super().train()
+        
+    def train_one_epoch(self, epoch):
+        # Adjust SCAB influence before training epoch
+        if hasattr(self.model, 'scab_modules') and self.model.scab_modules is not None:
+            scab_weight = adjust_scab_influence(
+                self.model, epoch, self.cfg['max_epoch'], self.scab_warmup_epochs
+            )
+            if epoch % 10 == 0 or epoch <= self.scab_warmup_epochs:  # Log every 10 epochs or during warmup
+                self.logger.info(f"Epoch {epoch}: SCAB weight = {scab_weight:.4f}")
+        
+        # Call parent training method
+        return super().train_one_epoch(epoch)
+
+
 def main():
     assert (os.path.exists(args.config))
     cfg = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)
@@ -40,6 +153,13 @@ def main():
 
     log_file = os.path.join(output_path, 'train.log.%s' % datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
     logger = create_logger(log_file)
+
+    logger.info("=" * 50)
+    logger.info("Progressive SCAB Training Started")
+    logger.info("=" * 50)
+    logger.info(f"Config: {args.config}")
+    logger.info(f"SCAB enabled: {cfg['model'].get('use_scab', False)}")
+    logger.info(f"SCAB reduction: {cfg['model'].get('scab_reduction', 16)}")
 
     # build dataloader
     train_loader, test_loader = build_dataloader(cfg['dataset'])
@@ -70,16 +190,38 @@ def main():
     # build lr scheduler
     lr_scheduler, warmup_lr_scheduler = build_lr_scheduler(cfg['lr_scheduler'], optimizer, last_epoch=-1)
 
-    trainer = Trainer(cfg=cfg['trainer'],
-                      model=model,
-                      optimizer=optimizer,
-                      train_loader=train_loader,
-                      test_loader=test_loader,
-                      lr_scheduler=lr_scheduler,
-                      warmup_lr_scheduler=warmup_lr_scheduler,
-                      logger=logger,
-                      loss=loss,
-                      model_name=model_name,)
+    # Check if SCAB is enabled and choose appropriate trainer
+    use_scab = cfg['model'].get('use_scab', False)
+    
+    if use_scab:
+        logger.info("Using Progressive SCAB Trainer")
+        initial_scab_weight = adjust_scab_influence(model, 0, cfg['trainer']['max_epoch'])
+        logger.info(f"Initial SCAB weight: {initial_scab_weight:.4f}")
+        
+        # Build Progressive SCAB trainer
+        trainer = ProgressiveSCABTrainer(cfg=cfg['trainer'],
+                          model=model,
+                          optimizer=optimizer,
+                          train_loader=train_loader,
+                          test_loader=test_loader,
+                          lr_scheduler=lr_scheduler,
+                          warmup_lr_scheduler=warmup_lr_scheduler,
+                          logger=logger,
+                          loss=loss,
+                          model_name=model_name)
+    else:
+        logger.info("Using Standard Trainer")
+        # Build standard trainer
+        trainer = Trainer(cfg=cfg['trainer'],
+                          model=model,
+                          optimizer=optimizer,
+                          train_loader=train_loader,
+                          test_loader=test_loader,
+                          lr_scheduler=lr_scheduler,
+                          warmup_lr_scheduler=warmup_lr_scheduler,
+                          logger=logger,
+                          loss=loss,
+                          model_name=model_name)
 
     tester = Tester(cfg=cfg['tester'],
                     model=trainer.model,

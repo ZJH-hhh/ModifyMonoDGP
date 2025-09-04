@@ -26,7 +26,7 @@ dataset:
   depth_scale: 'normal'
 
 
-model_name: 'wSCAB_lr0.0002_a40'
+model_name: 'scab_lr0.00002'
 model:
   num_classes: 3
   return_intermediate_dec: True
@@ -94,34 +94,40 @@ model:
 
 optimizer:
   type: 'adamw'
-  lr: 0.0002
+  lr: 0.00002  # Reduced learning rate for SCAB fine-tuning
   weight_decay: 0.0001
 
 
 lr_scheduler:
   type: 'step'  # 'step' or 'cos'
-  warmup: False  # 5 epoches, cosine warmup, init_lir=0.00001 in default
+  warmup: True  # Enable warmup for stability
+  warmup_epochs: 10  # Longer warmup
   decay_rate: 0.5
-  decay_list: [85, 125, 165, 205]
+  decay_list: [100, 140, 180, 220]  # Later decay schedule
 
 
 trainer:
-  max_epoch: 250
+  max_epoch: 150
   gpu_ids: '1'
   save_frequency: 1  # checkpoint save interval (in epoch)
   #resume_model: True
-  #pretrain_model: path/to/ckpt
-  save_path: 'outputs/'
+  pretrain_model: 'outputs/monodgp/checkpoint_best.pth'  # Now supports flexible loading
+  save_path: 'outputs/monodgp_scab/'
   save_all: False  # False for only savng the best and latest ckpts
   use_dn: False
   scalar: 5
   label_noise_scale: 0.2
   box_noise_scale: 0.4
   num_patterns: 0
+  
+  # Special training strategy for SCAB
+  freeze_backbone_epochs: 5  # Freeze backbone for first few epochs
+  scab_warmup_epochs: 20     # Gradually increase SCAB influence
 
 tester:
   type: *dataset_type
   mode: single  # 'single' or 'all'; 'all' to evaluate all ckpts in the folder
   checkpoint: 195  # the start ckpt epoch for 'all'
   threshold: 0.2  # confidence filter
-  topk: 50
+  topk: 50 
+inference on 472 images by 0.1792602160219419/per image
