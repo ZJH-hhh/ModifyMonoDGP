@@ -59,12 +59,18 @@ class MonoDGP(nn.Module):
         
         # Add SCAB modules for feature enhancement (optional)
         if self.use_scab:
+            # 根据是否使用预训练模型决定初始化策略
+            from_scratch = not hasattr(self, 'loaded_pretrained') or not self.loaded_pretrained
+            
             self.scab_modules = nn.ModuleList([
-                SpatialChannelAttention(hidden_dim, reduction=scab_reduction, init_weight=0.05) 
+                SpatialChannelAttention(
+                    hidden_dim, 
+                    reduction=scab_reduction, 
+                    init_weight=0.5,  # 从头训练时给较大初始权重
+                    from_scratch=from_scratch  # 传递训练模式标志
+                ) 
                 for _ in range(num_feature_levels)
             ])
-        else:
-            self.scab_modules = None
         
         # prediction heads
         self.class_embed = nn.Linear(hidden_dim, num_classes)

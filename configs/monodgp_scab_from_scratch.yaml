@@ -1,0 +1,136 @@
+random_seed: 444
+
+dataset:
+  type: &dataset_type 'KITTI'
+  root_dir: '/home/zjhzjh/workdir/Modify_MonoDGP/data/kitti'
+  train_split: 'train'
+  test_split: 'val'
+  batch_size: 8
+  use_3d_center: True
+  class_merging: False
+  use_dontcare: False
+  bbox2d_type: 'anno'  # 'proj' 或 'anno'
+  meanshape: False  # 是否使用预定义anchor
+  writelist: ['Car']
+  clip_2d: False
+
+  aug_pd: True
+  aug_crop: True
+
+  random_flip: 0.5
+  random_crop: 0.5
+  random_mixup3d: 0.3  # 从头训练时适当减少数据增强强度
+  scale: 0.03
+  shift: 0.03
+
+  depth_scale: 'normal'
+
+
+model_name: 'scab_from_scratch_improved_init'
+model:
+  num_classes: 3
+  return_intermediate_dec: True
+  device: 'cuda'
+
+  # Backbone配置
+  backbone: 'resnet50'
+  train_backbone: True  # 从头训练必须训练backbone
+  num_feature_levels: 4
+  dilation: False
+  position_embedding: 'sine'
+  masks: False
+
+  # 深度预测器
+  mode: LID
+  num_depth_bins: 80
+  depth_min: 1e-3
+  depth_max: 60.0
+
+  # Transformer配置
+  with_box_refine: True
+  use_dn: False
+  init_box: False
+  enc_layers: 3
+  dec_layers: 3
+  hidden_dim: 256
+  dim_feedforward: 256
+  dropout: 0.1
+  nheads: 8
+  num_queries: 50
+  group_num: 11
+  enc_n_points: 4
+  dec_n_points: 4
+  
+  # DN参数
+  scalar: 5
+  label_noise_scale: 0.2
+  box_noise_scale: 0.4
+  num_patterns: 0
+  
+  # 损失函数
+  aux_loss: True
+
+  # SCAB模块配置 - 从头训练专用
+  use_scab: True
+  scab_reduction: 16  # 通道缩减比例
+  scab_from_scratch: True  # 标记为从头训练模式
+  scab_init_mode: 'identity'  # 使用恒等映射初始化
+
+  # 损失函数系数
+  cls_loss_coef: 2
+  focal_alpha: 0.25
+  bbox_loss_coef: 5
+  giou_loss_coef: 2
+  3dcenter_loss_coef: 8  # 从头训练时稍微降低，避免初期过度关注
+  dim_loss_coef: 1
+  angle_loss_coef: 1
+  depth_loss_coef: 1.2  # 适当增加深度监督
+  depth_map_loss_coef: 1.2
+  region_loss_coef: 1
+
+  # Matcher配置
+  set_cost_class: 2
+  set_cost_bbox: 5
+  set_cost_giou: 2
+  set_cost_3dcenter: 8
+
+
+optimizer:
+  type: 'adamw'
+  lr: 0.0002  # 从头训练使用较高学习率（是fine-tune的5倍）
+  weight_decay: 0.0001
+
+
+lr_scheduler:
+  type: 'step'
+  warmup: True
+  warmup_epochs: 3  # 较短的warmup让网络快速开始学习
+  decay_rate: 0.5
+  decay_list: [50, 100, 150, 200, 250]  # 适配300轮的学习率衰减
+
+
+trainer:
+  max_epoch: 300  # 从头训练需要更多轮次
+  gpu_ids: '1'
+  save_frequency: 1  # 每5轮保存一次，节省磁盘空间
+  # 注意：不要设置 pretrain_model，这是从头训练
+  # resume_model: True  # 如果中断后继续训练，取消此行注释
+  save_path: 'outputs/monodgp_scab_from_scratch/'
+  save_all: False  # 仅保存最佳和最新的checkpoint
+  use_dn: False
+  scalar: 5
+  label_noise_scale: 0.2
+  box_noise_scale: 0.4
+  num_patterns: 0
+  
+  # SCAB渐进式训练配置 - 针对从头训练优化
+  freeze_backbone_epochs: 0  # 不冻结backbone，让其从一开始就学习
+  scab_warmup_epochs: 10  # 缩短SCAB warmup（从20减到10）
+
+
+tester:
+  type: *dataset_type
+  mode: single  # 'single' 或 'all'
+  checkpoint: 'best'  # 测试最佳checkpoint
+  threshold: 0.2  # 置信度过滤阈值
+  topk: 50

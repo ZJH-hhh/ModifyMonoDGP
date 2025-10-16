@@ -1,0 +1,129 @@
+random_seed: 444
+
+dataset:
+  type: &dataset_type 'KITTI'
+  root_dir: '/home/zjhzjh/workdir/Modify_MonoDGP/data/kitti'
+  train_split: 'train'
+  test_split: 'val'
+  batch_size: 8
+  use_3d_center: True
+  class_merging: False
+  use_dontcare: False
+  bbox2d_type: 'anno'
+  meanshape: False
+  writelist: ['Car']
+  clip_2d: False
+
+  aug_pd: True
+  aug_crop: True
+
+  random_flip: 0.5
+  random_crop: 0.5
+  random_mixup3d: 0.2  # 第一阶段使用较弱的augmentation
+  scale: 0.02
+  shift: 0.02
+
+  depth_scale: 'normal'
+
+
+model_name: 'scab_staged_phase1_base_network'
+model:
+  num_classes: 3
+  return_intermediate_dec: True
+  device: 'cuda'
+
+  # Backbone
+  backbone: 'resnet50'
+  train_backbone: True
+  num_feature_levels: 4
+  dilation: False
+  position_embedding: 'sine'
+  masks: False
+
+  # Depth predictor
+  mode: LID
+  num_depth_bins: 80
+  depth_min: 1e-3
+  depth_max: 60.0
+
+  # Transformer
+  with_box_refine: True
+  use_dn: False
+  init_box: False
+  enc_layers: 3
+  dec_layers: 3
+  hidden_dim: 256
+  dim_feedforward: 256
+  dropout: 0.1
+  nheads: 8
+  num_queries: 50
+  group_num: 11
+  enc_n_points: 4
+  dec_n_points: 4
+  # DN
+  scalar: 5
+  label_noise_scale: 0.2
+  box_noise_scale: 0.4
+  num_patterns: 0
+  # Loss
+  aux_loss: True
+
+  # SCAB设置 - 第一阶段先禁用SCAB
+  use_scab: False  # 第一阶段不使用SCAB
+  scab_reduction: 16
+
+  # Loss coefficients - 标准设置
+  cls_loss_coef: 2
+  focal_alpha: 0.25
+  bbox_loss_coef: 5
+  giou_loss_coef: 2
+  3dcenter_loss_coef: 10
+  dim_loss_coef: 1
+  angle_loss_coef: 1
+  depth_loss_coef: 1
+  depth_map_loss_coef: 1
+  region_loss_coef: 1
+
+  # Matcher
+  set_cost_class: 2
+  set_cost_bbox: 5
+  set_cost_giou: 2
+  set_cost_3dcenter: 10
+
+
+optimizer:
+  type: 'adamw'
+  lr: 0.0002  # 第一阶段使用较高学习率快速收敛
+  weight_decay: 0.0001
+
+
+lr_scheduler:
+  type: 'step'
+  warmup: True
+  warmup_epochs: 3  # 短warmup
+  decay_rate: 0.5
+  decay_list: [30, 50, 70]  # 80 epochs的调度
+
+
+trainer:
+  max_epoch: 80  # 第一阶段：训练基础网络
+  gpu_ids: '1'
+  save_frequency: 5
+  save_path: 'outputs/monodgp_stage1_base/'
+  save_all: False
+  use_dn: False
+  scalar: 5
+  label_noise_scale: 0.2
+  box_noise_scale: 0.4
+  num_patterns: 0
+  
+  # 第一阶段不需要特殊策略
+  freeze_backbone_epochs: 0
+  scab_warmup_epochs: 0
+
+tester:
+  type: *dataset_type
+  mode: single
+  checkpoint: 'best'
+  threshold: 0.2
+  topk: 50 
